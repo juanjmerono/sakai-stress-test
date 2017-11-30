@@ -18,6 +18,7 @@
     <!-- Common Gatling Properties -->
     <propertiesFile>src/test/resources/stresstest.properties</propertiesFile>
     <resultsFolder>target/gatling/temp</resultsFolder>
+    <gatling.simulationClass>SakaiSimulation</gatling.simulationClass>
   </properties>
 
   <dependencies>
@@ -64,6 +65,15 @@
   		<properties>
   			<propertiesFile>src/test/resources/private_stresstest.properties</propertiesFile>
   			<privateCredentials>true</privateCredentials>
+  		</properties>
+  	</profile>
+  	<profile>
+  		<!-- Use this profile if you want to hide your credentials and properties -->
+  		<id>liferay</id>
+  		<properties>
+  			<propertiesFile>src/test/resources/private_liferay_stresstest.properties</propertiesFile>
+  			<privateCredentials>true</privateCredentials>
+  			<gatling.simulationClass>LiferaySimulation</gatling.simulationClass>
   		</properties>
   	</profile>
   	<profile>

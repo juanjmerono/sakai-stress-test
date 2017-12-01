@@ -7,6 +7,7 @@ import io.gatling.jdbc.Predef._
 import io.gatling.core.action.builder._
 import java.net._
 import scala.collection.mutable.ListBuffer
+import liferay.MyEncryptor
 
 class LiferaySimulation extends Simulation {
 
@@ -59,9 +60,8 @@ class LiferaySimulation extends Simulation {
 	val prefix = if (privatePrefix == "true") "private_liferay_" else ""
 	val users = getFeeder(prefix+"user_credentials.csv",System.getProperty("feed-strategy"))
 	val admins = getFeeder(prefix+"admin_credentials.csv",System.getProperty("feed-strategy"))
-	val jsfViewStateCheck = css("input[name=com\\.sun\\.faces\\.VIEW]", "value").saveAs("viewState")
 	
-	def join(first: Vector[String], second: Vector[String]) : Vector[(String,String)] = (first.map(s => s.replace("My Workspace","Home")) zip second.map(s => URLDecoder.decode(s,"UTF-8")))
+	def join(first: Vector[String], second: Vector[String]) : Vector[(String,String)] = (first zip second.map(s => URLDecoder.decode(s,"UTF-8")))
 	def checkAttrs(cssSelector: String, attrName: String, varName: String) = css(cssSelector,attrName).findAll.saveAs(varName)
 	def checkElement(cssSelector: String, varName: String) = css(cssSelector).findAll.saveAs(varName)
 	
@@ -79,7 +79,7 @@ class LiferaySimulation extends Simulation {
 		.remove(firstName)
 		.remove(secondName)
 		.set(finalName, util.Random.shuffle(join(session(firstName).as[Vector[String]],session(secondName).as[Vector[String]])))
-	
+
 	def joinInSessionFiltered(session: Session, firstName: String, secondName: String, finalName: String, oneFilteredBy: String, twoFilteredBy: String) = 
 		session
 		.remove(firstName)
@@ -94,7 +94,7 @@ class LiferaySimulation extends Simulation {
 	object Gateway {
 		val gateway = group("Gateway") {
 			exec(http("Portal")
-				.get("/web/suma")
+				.get("/web/suma/")
 				.headers(headers)
 				.check(status.is(successStatus)))
 			.pause(pauseMin,pauseMax)
@@ -125,42 +125,23 @@ class LiferaySimulation extends Simulation {
 					.check(status.is(successStatus))
 					.check(checkItsMe("${adminusername}")))
 				.pause(pauseMin,pauseMax)
-				.group("BecomeUser") {
-					exec(http("ControlPanel")
-						.get("/group/control_panel")
+				.group("ImpersonateUser") {
+					exec(http("Company")
+						.get("/api/jsonws/company/get-company-by-virtual-host/virtual-host/www.um.es")
 						.headers(headers)
 						.check(status.is(successStatus))
-						.check(css("ul.favoriteSiteList > li.is-selected > a.site-favorite-btn","data-site-id").optional.saveAs("siteId"))
-						.check(checkAttrs("a.Mrphs-toolsNav__menuitem--link","href","adminToolUrls"))
-						.check(checkAttrs("span.Mrphs-toolsNav__menuitem--icon","class","adminToolIds")))
-					.exec(session => { joinInSessionOneFiltered(session,"adminToolIds","adminToolUrls","sutool","icon-sakai--sakai-su") })
+						.check(jsonPath("$.companyId").optional.saveAs("companyId")))
 					.pause(pauseMin,pauseMax)
-					.exec(http("BecomeUserForm")
-						.get("${sutool._2}")
+					.exec(http("User")
+						.get("/api/jsonws/user/get-user-by-email-address/company-id/${companyId}/email-address/${username}")
 						.headers(headers)
 						.check(status.is(successStatus))
-						.check(jsfViewStateCheck)
-						.check(css("form[id=su]","action").saveAs("supost")))
-					.pause(pauseMin,pauseMax)
-					.feed(users)
-					.exec(http("BecomeUserPost")
-						.post("${supost}")
+						.check(jsonPath("$.userId").optional.saveAs("userId")))
+					.exec(http("Impersonate")
+						.get("/web/suma${doAsUserId}")
 						.headers(headers)
-						.formParam("su:username", "${username}")
-						.formParam("su:become", "Become user")
-						.formParam("com.sun.faces.VIEW", "${viewState}")
-						.formParam("su", "su")
-						.check(status.is(successStatus))
 						.check(checkItsMe("${username}")))
-					.pause(pauseMin,pauseMax)
-					.exec(http("UserHome")
-						.get("/portal")
-						.headers(headers)
-						.check(status.is(successStatus))
-						.check(checkAttrs("div.fav-title > a","href","siteUrls"))
-						.check(checkAttrs("div.fav-title > a","title","siteTitles")))
-					.exec(session => { joinInSessionFiltered(session,"siteTitles","siteUrls","sites",fixedSiteTitle,".*\\/portal\\/site\\/"+fixedSiteId) })
-					.exec(session => { clearAjaxData(session,"presenceScript","latestData") })
+					.exec(session => session.set("doAsUserId","?doAsUserId="+URLDecoder.decode(MyEncryptor.encrypt(System.getProperty("liferay-key"),"${userId}"),"UTF-8")))
 				}
 			}
 			{	/** Use real credentials */
@@ -189,6 +170,7 @@ class LiferaySimulation extends Simulation {
 					.check(status.is(successStatus))
 					.check(checkItsMe("${username}")))
 				.pause(pauseMin,pauseMax)
+				exec(session => session.set("doAsUserId",""))
 			}
 		} 
 	}
@@ -197,10 +179,30 @@ class LiferaySimulation extends Simulation {
 		val explore =
 			group("${tool._1}") {
 				exec(http("${tool._1}")
-					.get("${tool._2}")
+					.get("${tool._2}${doAsUserId}")
 					.headers(headers)
 					.check(status.is(successStatus))
-					.check(css("a.current","href").is("${tool._2}")))
+					.check(css("nav#breadcrumbs li:last a","href").is("${tool._2}"))
+					.check(css("form[action^='/delegate/proxy/']","action").findAll.optional.saveAs("frameUrls"))
+					.check(css("form[action^='/delegate/proxy/'] > input[name='sessionid']","value").findAll.optional.saveAs("frameIds"))
+					.check(css("form[action^='/delegate/proxy/'] > input[name='urlpci']","value").findAll.optional.saveAs("frameNames")))
+				.pause(pauseMin,pauseMax)
+				/** Take care of all iframed tools */
+				.doIf("${frameUrls.exists()}") {
+					exec(session => { joinInSession(session,"frameNames","frameUrls","frames") })
+					.exec(session => session.set("pcisession",session("frameIds").as[Vector[String]].lift(0).get) )
+					.foreach("${frames}","frame") {
+						exec(http("${frame._1}")
+							.post("${frame._2}")
+							.headers(headers)
+							.formParam("urlpci", "${frame._1}")
+							.formParam("sessionid", "${pcisession}")
+							.check(css("link[href='/WWW/estilos/estilo_suma.css']").exists)
+							.check(status.is(successStatus)))
+						.pause(pauseMin,pauseMax)
+						.exec(session => session.remove("frameIds").remove("pcisession"))
+					}
+				}
 				.pause(pauseMin,pauseMax)
 			}
 		
@@ -230,12 +232,12 @@ class LiferaySimulation extends Simulation {
 		val explore = (random: Boolean) =>
 			group("GetSite") {
 				exec(http("GetSite")
-					.get("/web/suma")
+					.get("/web/suma${doAsUserId}")
 					.headers(headers)
 					.check(status.is(successStatus))
 					.check(css("span.username").exists)
-					.check(checkAttrs("a[role='menuitem']","href","toolUrls"))
-					.check(css("a[role='menuitem']","href").findAll.transform(
+					.check(checkAttrs("nav[role='navigation'] ul[role='menubar'] a[href^='"+System.getProperty("test-url")+"/web/suma/']","href","toolUrls"))
+					.check(css("nav[role='navigation'] ul[role='menubar'] a[href^='"+System.getProperty("test-url")+"/web/suma/']","href").findAll.transform(
 						full_list => {
 							/** reduce links to ids */
 							val new_list = new Array[String](full_list.length) 

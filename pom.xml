@@ -28,6 +28,13 @@
       <version>${gatling.version}</version>
       <scope>test</scope>
     </dependency>
+	<!-- Liferay Dependencies -->
+	<dependency>
+	    <groupId>com.liferay.portal</groupId>
+	    <artifactId>com.liferay.portal.kernel</artifactId>
+	    <version>2.6.0</version>
+	    <scope>provided</scope>
+	</dependency>
   </dependencies>
 
   <profiles>
@@ -140,6 +147,7 @@
 				<jvmArg>-Dfixed-site-title=${siteTitle}</jvmArg>
 				<jvmArg>-Dfixed-tool=${toolId}</jvmArg>
 				<jvmArg>-Dallow-plugins=${allowPlugins}</jvmArg>
+				<jvmArg>-Dliferay-key=${liferayKey}</jvmArg>
 			</jvmArgs>
 		</configuration>
         <executions>

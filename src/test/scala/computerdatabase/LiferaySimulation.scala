@@ -28,7 +28,7 @@ class LiferaySimulation extends Simulation {
 	val fixedToolId = System.getProperty("fixed-tool")
 	val fixedSiteTitle = System.getProperty("fixed-site-title")
 	
-	val httpProtocol = http
+	val httpProtocol = http.disableWarmUp
 		.baseURL(System.getProperty("test-url"))
 		/**.inferHtmlResources(BlackList(".*(\.css|\.js|\.png|\.jpg|\.gif|thumb).*"), WhiteList())*/
 		.userAgentHeader("Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36")
@@ -45,8 +45,7 @@ class LiferaySimulation extends Simulation {
 		"Accept-Language" -> "es-ES,es;q=0.8,en;q=0.6",
 		"Cache-Control" -> "max-age=0",
 		"Connection" -> "keep-alive",
-		"Upgrade-Insecure-Requests" -> "1",
-		"Content-Type" -> "application/x-www-form-urlencoded")
+		"Upgrade-Insecure-Requests" -> "1")
 
 	/** Let change feed strategy and avoid error if there are not enough users in the feed */
 	def getFeeder(name: String, strategy: String) = strategy match {
@@ -61,7 +60,7 @@ class LiferaySimulation extends Simulation {
 	val users = getFeeder(prefix+"user_credentials.csv",System.getProperty("feed-strategy"))
 	val admins = getFeeder(prefix+"admin_credentials.csv",System.getProperty("feed-strategy"))
 	
-	def join(first: Vector[String], second: Vector[String]) : Vector[(String,String)] = (first zip second.map(s => URLDecoder.decode(s,"UTF-8")))
+	def join(first: Vector[String], second: Vector[String]) : Vector[(String,String)] = (first zip second)
 	def checkAttrs(cssSelector: String, attrName: String, varName: String) = css(cssSelector,attrName).findAll.saveAs(varName)
 	def checkElement(cssSelector: String, varName: String) = css(cssSelector).findAll.saveAs(varName)
 	
@@ -132,16 +131,17 @@ class LiferaySimulation extends Simulation {
 						.check(status.is(successStatus))
 						.check(jsonPath("$.companyId").optional.saveAs("companyId")))
 					.pause(pauseMin,pauseMax)
+					.feed(users)
 					.exec(http("User")
 						.get("/api/jsonws/user/get-user-by-email-address/company-id/${companyId}/email-address/${username}")
 						.headers(headers)
 						.check(status.is(successStatus))
 						.check(jsonPath("$.userId").optional.saveAs("userId")))
+					.exec(session => session.set("doAsUserId","?doAsUserId="+URLDecoder.decode(MyEncryptor.encrypt(System.getProperty("liferay-key"),session("userId").as[String]),"UTF-8")))
 					.exec(http("Impersonate")
-						.get("/web/suma${doAsUserId}")
+						.get("/web/suma/inicio${doAsUserId}")
 						.headers(headers)
 						.check(checkItsMe("${username}")))
-					.exec(session => session.set("doAsUserId","?doAsUserId="+URLDecoder.decode(MyEncryptor.encrypt(System.getProperty("liferay-key"),"${userId}"),"UTF-8")))
 				}
 			}
 			{	/** Use real credentials */
@@ -179,9 +179,10 @@ class LiferaySimulation extends Simulation {
 		val explore =
 			group("${tool._1}") {
 				exec(http("${tool._1}")
-					.get("${tool._2}${doAsUserId}")
+					.get("${tool._2}")
 					.headers(headers)
 					.check(status.is(successStatus))
+					.check(checkItsMe("${username}"))
 					.check(css("nav#breadcrumbs li:last a","href").is("${tool._2}"))
 					.check(css("form[action^='/delegate/proxy/']","action").findAll.optional.saveAs("frameUrls"))
 					.check(css("form[action^='/delegate/proxy/'] > input[name='sessionid']","value").findAll.optional.saveAs("frameIds"))
@@ -192,15 +193,33 @@ class LiferaySimulation extends Simulation {
 					exec(session => { joinInSession(session,"frameNames","frameUrls","frames") })
 					.exec(session => session.set("pcisession",session("frameIds").as[Vector[String]].lift(0).get) )
 					.foreach("${frames}","frame") {
-						exec(http("${frame._1}")
-							.post("${frame._2}")
-							.headers(headers)
-							.formParam("urlpci", "${frame._1}")
-							.formParam("sessionid", "${pcisession}")
-							.check(css("link[href='/WWW/estilos/estilo_suma.css']").exists)
-							.check(status.is(successStatus)))
-						.pause(pauseMin,pauseMax)
-						.exec(session => session.remove("frameIds").remove("pcisession"))
+						group("generico_tp.entrada_por_suma") {
+							exec(http("${frame._1}")
+								.post("${frame._2}")
+								.headers(headers)
+								.formParam("urlpci", "${frame._1}")
+								.formParam("sessionid", "${pcisession}")
+								.check(regex("window.location.href=\"\\s*([^\"\\s]*)\\s*\"").optional.saveAs("menuurl"))
+								.check(regex("window.location.href=\"\\s*([^\"\\s]*)\\s*\"").optional.saveAs("menupci"))
+								.check(status.is(successStatus)))
+							.pause(pauseMin,pauseMax)
+							.asLongAs(session => session("menupci").as[String]!="END") {
+								exec(session => session.set("menupci","END"))
+								.exec(http("${menuurl}")
+									.get("/delegate/proxy/pci_pci/${menuurl}")
+									.headers(headers)
+									.check(regex("window.location.href=\"\\s*([^\"\\s]*)\\s*\"").optional.saveAs("menuurl"))
+									.check(regex("window.location.href=\"\\s*([^\"\\s]*)\\s*\"").optional.saveAs("menupci"))
+									.check(status.is(successStatus)))
+								.pause(pauseMin,pauseMax)
+							}
+							.exec(http("${menuurl}")
+								.get("/delegate/proxy/pci_pci/${menuurl}")
+								.headers(headers)
+								.check(css("link[href='/WWW/estilos/estilo_suma.css']").exists)
+								.check(status.is(successStatus)))
+							.exec(session => session.remove("frameIds").remove("pcisession").remove("menupci").remove("menuurl"))
+						}
 					}
 				}
 				.pause(pauseMin,pauseMax)
@@ -232,17 +251,17 @@ class LiferaySimulation extends Simulation {
 		val explore = (random: Boolean) =>
 			group("GetSite") {
 				exec(http("GetSite")
-					.get("/web/suma${doAsUserId}")
+					.get("/web/suma/inicio${doAsUserId}")
 					.headers(headers)
 					.check(status.is(successStatus))
-					.check(css("span.username").exists)
+					.check(checkItsMe("${username}"))
 					.check(checkAttrs("nav[role='navigation'] ul[role='menubar'] a[href^='"+System.getProperty("test-url")+"/web/suma/']","href","toolUrls"))
 					.check(css("nav[role='navigation'] ul[role='menubar'] a[href^='"+System.getProperty("test-url")+"/web/suma/']","href").findAll.transform(
 						full_list => {
 							/** reduce links to ids */
 							val new_list = new Array[String](full_list.length) 
 							for (i <- 0 until full_list.length) {
-								new_list(i) = full_list(i).replace(System.getProperty("test-url")+"/web","").trim()
+								new_list(i) = full_list(i).replace(System.getProperty("test-url")+"/web","").replaceAll("\\?doAsUserId=.*","").trim()
 							}
 							new_list.to[collection.immutable.Seq]
 						}).saveAs("toolIds")))
@@ -256,19 +275,11 @@ class LiferaySimulation extends Simulation {
 	}
 
 	object Logout {
-		val logout = (impersonate: Boolean) =>
-		group("Logout") {
+		val logout = group("Logout") {
 			exec(http("Logout")
 				.get("/c/portal/logout")
 				.headers(headers)
 				.check(status.is(successStatus)))
-			.doIf(impersonate) {
-				/*exec(checkItsMe("${adminusername}"))*/
-				exec(http("AdminLogout")
-					.get("/portal/logout")
-					.headers(headers)
-					.check(status.is(successStatus)))
-			}
 		}
 	}
 	
@@ -277,8 +288,10 @@ class LiferaySimulation extends Simulation {
 			exec(
 				Gateway.gateway,
 				Login.login(impersonate),
-				ExploreSite.explore(random),
-				Logout.logout(impersonate))
+				repeat(siteLoop) {
+					ExploreSite.explore(random)
+				},
+				Logout.logout)
 		}
 	}
 	

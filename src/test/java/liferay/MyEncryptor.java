@@ -63,7 +63,7 @@ public class MyEncryptor {
 	
 	public static String encrypt(String key, String userId) {
 		try {
-			return encrypt(deserializeKey(key),userId);
+			return encrypt(deserializeKey(key),userId).replaceAll("\\+","%252B");
 		} catch (Exception e) {
 			System.err.println(e.getMessage());
 		}
